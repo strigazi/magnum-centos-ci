@@ -1,65 +1,86 @@
 #!/usr/bin/bash -ex
 
-sed -i '/pyramid_debugtoolbar/d' setup.py
-sed -i '/pyramid_debugtoolbar/d' development.ini.example
 
-sudo yum install -y epel-release
+yum install -y python-devel zlib-devel libxml2-devel \
+               mysqlclient-devel libxslt-devel postgresql-devel git \
+               libffi-devel gettext openssl-devel
 
-# gcc is used to build some dependencies pulled from pypi for coverage.
-# git is needed for diff_cover to work.
-# python-devel is needed for some of the pypi deps when gcc is run.
-# pip is needed to install some things below.
-sudo yum install -y gcc git python-devel python2-pip
+yum -y groupinstall 'Development Tools'
 
-# We want a newer version of flake8 than EL 7 has, because the EL 7 version fails and we only really
-# care about it for devs, who use Fedora.
-sudo pip install diff_cover flake8 pytest-cov tox
+easy_install pip
+pip install -U pip
+pip install virtualenv flake8 tox testrepository git-review
+pip install -U virtualenv
 
-sudo yum install -y\
-    createrepo_c\
-    fedmsg\
-    koji\
-    liberation-mono-fonts\
-    packagedb-cli\
-    python-alembic\
-    python-arrow\
-    python-bleach\
-    python-bugzilla\
-    python-bunch\
-    python-click\
-    python-colander\
-    python-cornice\
-    python-createrepo_c\
-    python-cryptography\
-    python-dogpile-cache\
-    python-fedora\
-    python-kitchen\
-    python-librepo\
-    python-markdown\
-    python-mock\
-    python-openid\
-    python-pillow\
-    python-progressbar\
-    python-pydns\
-    python-pylibravatar\
-    python-pyramid-fas-openid\
-    python-pyramid-mako\
-    python-pyramid-tm\
-    python-pyramid\
-    python-simplemediawiki\
-    python-sqlalchemy\
-    python-sqlalchemy_schemadisplay\
-    python-waitress\
-    python-webhelpers\
-    python-webob1.4\
-    python-webtest\
-    python2-fedmsg-atomic-composer\
+git clone https://git.openstack.org/openstack-dev/devstack
+devstack/tools/create-stack-user.sh
 
-mv development.ini.example development.ini
+su -s /bin/sh -c "git clone https://git.openstack.org/openstack-dev/devstack /opt/stack/devstack" stack
+su -s /bin/sh -c "cat > /opt/stack/devstack/local.conf << END
+[[local|localrc]]
 
-sudo /usr/bin/python setup.py develop
+IP_VERSION=4
+SERVICE_IP_VERSION=4
 
-/usr/bin/pytest
-/usr/bin/tox -e pydocstyle,flake8
+DATABASE_PASSWORD=password
+RABBIT_PASSWORD=password
+SERVICE_TOKEN=password
+SERVICE_PASSWORD=password
+ADMIN_PASSWORD=password
 
-diff-cover coverage.xml --compare-branch=origin/develop --fail-under=100
+
+enable_plugin neutron-lbaas https://git.openstack.org/openstack/neutron-lbaas
+enable_plugin octavia https://git.openstack.org/openstack/octavia
+disable_service q-lbaas
+enable_service q-lbaasv2
+enable_service octavia
+enable_service o-cw
+enable_service o-hk
+enable_service o-hm
+enable_service o-api
+
+disable_service horizon
+
+enable_plugin heat https://git.openstack.org/openstack/heat
+enable_plugin magnum https://git.openstack.org/openstack/magnum
+
+ENABLED_SERVICES+=,octavia,o-cw,o-hk,o-hm,o-api
+ENABLED_SERVICES+=,q-svc,q-agt,q-dhcp,q-l3,q-meta
+ENABLED_SERVICES+=,q-lbaasv2
+
+
+VOLUME_BACKING_FILE_SIZE=20G
+END
+" stack
+
+su -s /bin/sh -c "/opt/stack/devstack/stack.sh" stack
+
+cd /opt/stack/magnum
+cp /opt/stack/tempest/etc/tempest.conf /opt/stack/magnum/etc/tempest.conf
+cp functional_creds.conf.sample functional_creds.conf
+
+# update the IP address
+HOST=$(iniget /etc/magnum/magnum.conf api host)
+PORT=$(iniget /etc/magnum/magnum.conf api port)
+iniset functional_creds.conf auth auth_url "http://"$HOST"/v3"
+iniset functional_creds.conf auth magnum_url "http://"$HOST":"$PORT"/v1"
+
+# update admin password
+source /opt/stack/devstack/openrc admin admin
+iniset functional_creds.conf admin pass $OS_PASSWORD
+
+# update demo password
+source /opt/stack/devstack/openrc demo demo
+iniset functional_creds.conf auth password $OS_PASSWORD
+
+source /opt/stack/devstack/openrc demo demo
+
+source /opt/stack/devstack/openrc admin admin
+nova keypair-add --pub-key ~/.ssh/id_rsa.pub default
+nova flavor-create  m1.magnum 100 1024 10 1
+nova flavor-create  s1.magnum 200 512 10 1
+
+source /opt/stack/devstack/openrc demo demo
+nova keypair-add --pub-key ~/.ssh/id_rsa.pub default
+
+tox -e functional-k8s -- --concurrency 1

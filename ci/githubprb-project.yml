@@ -82,13 +82,12 @@
             # Save the jenkins environment if needed
             env > jenkins-env
             $ssh_cmd yum -y install rsync
-            # Checkout the pull request that we received from the githubPRB plugin
-            git rebase --preserve-merges origin/${{ghprbTargetBranch}} \
-            && rsync -e "ssh $sshopts" -Ha $(pwd)/ $CICO_hostname:payload \
-            && /usr/bin/timeout {timeout} $ssh_cmd -t "cd payload && {ci_cmd}"
+            # Create devstack env and run the tests
+            /usr/bin/timeout {timeout} $ssh_cmd -t "cd payload && {ci_cmd}"
             rtn_code=$?
+
             # Copy the archive results back to the master
-            rsync -e "ssh $sshopts" -Ha $CICO_hostname:payload/\*.xml $(pwd)/
+            rsync -e "ssh $sshopts" -Ha $CICO_hostname:/opt/stack/logs $(pwd)/
             if [ $rtn_code -eq 0 ]; then
                 cico node done $CICO_ssid
             else
